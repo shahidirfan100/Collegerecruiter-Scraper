@@ -2,6 +2,7 @@
 import { Actor, log } from 'apify';
 import { Dataset, gotScraping } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
+import { chromium } from 'playwright';
 
 const SEARCH_PAGE_BASE = 'https://www.collegerecruiter.com/job-search';
 const NEXT_DATA_ENDPOINT = 'https://www.collegerecruiter.com/_next/data';
@@ -172,58 +173,65 @@ const normalizeNextDataPayload = (payload) => {
     };
 };
 
-const parseNextDataFromHtml = (html) => {
-    if (!html) return null;
-    const $ = cheerioLoad(html);
-    const scriptContent = $('#__NEXT_DATA__').text();
-
-    if (!scriptContent) {
-        return null;
-    }
-
-    try {
-        const payload = JSON.parse(scriptContent);
-        const normalized = normalizeNextDataPayload(payload);
-        if (!normalized) return null;
-        return { ...normalized, buildId: payload.buildId ?? normalized.buildId };
-    } catch (error) {
-        log.warning(`Failed to parse __NEXT_DATA__: ${error.message}`);
-        return null;
-    }
+const toPlaywrightProxy = (proxyUrl) => {
+    if (!proxyUrl) return undefined;
+    const u = new URL(proxyUrl);
+    const server = `${u.protocol}//${u.hostname}${u.port ? `:${u.port}` : ''}`;
+    const username = u.username ? decodeURIComponent(u.username) : undefined;
+    const password = u.password ? decodeURIComponent(u.password) : undefined;
+    return { server, username, password };
 };
 
-const parseJobsFromHtmlList = (html) => {
-    if (!html) return { jobs: [], totalResults: 0 };
-    const $ = cheerioLoad(html);
-    const jobs = [];
-    const seen = new Set();
-    $('.results-list button[data-job-id]').each((_, el) => {
-        const $el = $(el);
-        const jobId = $el.attr('data-job-id')?.trim();
-        if (jobId && seen.has(jobId)) return;
-        if (jobId) seen.add(jobId);
-        const jobUrl = $el.attr('data-job-url')?.trim();
-        const title = $el.find('.title').text().trim();
-        const company = $el.find('.company').text().trim();
-        const summaryHtml = $el.find('.summary').html() || '';
-        const summary = cleanHtml(summaryHtml);
-        const location = $el.find('.location').text().replace(/\s+/g, ' ').trim();
-        const postedText = $el.find('.text-gray small').first().text().replace('Posted', '').trim();
-        jobs.push({
-            id: jobId || jobUrl || null,
-            title: title || null,
-            company: company || null,
-            summary: summary || null,
-            location: location || null,
-            url: jobUrl || null,
-            datePosted: postedText || null,
-            employmentTypeText: null,
-            source: 'html-list',
-        });
+const createPlaywrightSession = async (proxyConfiguration) => {
+    const pickProxyUrl = createProxyUrlPicker(proxyConfiguration);
+    const proxyUrl = await pickProxyUrl('playwright');
+    const proxy = toPlaywrightProxy(proxyUrl);
+
+    const browser = await chromium.launch({
+        headless: true,
+        proxy,
+        args: ['--disable-blink-features=AutomationControlled', '--no-sandbox'],
     });
-    const totalText = $('.results-high').first().text().replace(/[^\d]/g, '');
-    const totalResults = totalText ? Number(totalText) : jobs.length;
-    return { jobs, totalResults, source: 'html-list' };
+
+    const context = await browser.newContext({
+        locale: 'en-US',
+        viewport: { width: 1366, height: 768 },
+        userAgent:
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    });
+
+    await context.route('**/*', async (route) => {
+        const resourceType = route.request().resourceType();
+        if (resourceType === 'image' || resourceType === 'media' || resourceType === 'font') {
+            await route.abort();
+            return;
+        }
+        await route.continue();
+    });
+
+    const page = await context.newPage();
+    page.setDefaultTimeout(25000);
+
+    const fetchNextData = async (url) => {
+        const response = await page.goto(url, { waitUntil: 'domcontentloaded' });
+        const status = response?.status();
+        if (status && status >= 400) {
+            throw new Error(`Playwright navigation status ${status}`);
+        }
+
+        await page.waitForSelector('#__NEXT_DATA__');
+        const jsonText = await page.$eval('#__NEXT_DATA__', (el) => el.textContent || '');
+        if (!jsonText) throw new Error('Missing __NEXT_DATA__');
+        return JSON.parse(jsonText);
+    };
+
+    return {
+        fetchNextData,
+        close: async () => {
+            await context.close().catch(() => {});
+            await browser.close().catch(() => {});
+        },
+    };
 };
 
 const parseJobFromJson = (jobData, source = 'json-api') => {
