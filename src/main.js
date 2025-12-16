@@ -230,10 +230,38 @@ const createPlaywrightSession = async (proxyConfiguration) => {
             throw new Error(`Playwright navigation status ${status}`);
         }
 
-        await page.waitForSelector('#__NEXT_DATA__');
-        const jsonText = await page.$eval('#__NEXT_DATA__', (el) => el.textContent || '');
+        // The script tag is usually not visible; wait for it to be attached and try to read it.
+        let jsonText = null;
+        try {
+            await page.waitForSelector('#__NEXT_DATA__', { state: 'attached', timeout: 15000 });
+            jsonText = await page.$eval('#__NEXT_DATA__', (el) => el.textContent || '');
+        } catch (err) {
+            log.warning(`__NEXT_DATA__ selector issues: ${err.message}. Trying fallback to HTML content.`);
+            const html = await page.content();
+            const match = html.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+            if (match) jsonText = match[1];
+        }
+
+        // If still missing, attempt a reload and wait for network idle to allow client hydration
+        if (!jsonText) {
+            try {
+                await page.reload({ waitUntil: 'networkidle' });
+                await page.waitForTimeout(1000);
+                const html2 = await page.content();
+                const match2 = html2.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+                if (match2) jsonText = match2[1];
+            } catch (err) {
+                log.warning(`Playwright reload fallback failed: ${err.message}`);
+            }
+        }
+
         if (!jsonText) throw new Error('Missing __NEXT_DATA__');
-        return JSON.parse(jsonText);
+
+        try {
+            return JSON.parse(jsonText);
+        } catch (err) {
+            throw new Error(`Failed to parse __NEXT_DATA__: ${err.message}`);
+        }
     };
 
     return {
