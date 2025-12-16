@@ -1,6 +1,7 @@
 // College Recruiter Jobs Scraper - HTTP + JSON parse first, HTML fallback
 import { Actor, log } from 'apify';
-import { Dataset, gotScraping } from 'crawlee';
+import { Dataset } from 'crawlee';
+import { gotScraping } from 'got-scraping';
 import { load as cheerioLoad } from 'cheerio';
 import { chromium } from 'playwright';
 
@@ -356,10 +357,12 @@ const fetchSearchPage = async ({ search, page, request, searchState, stats, prox
     }
 
     // Playwright fallback for heavy blocking (e.g., 403)
+    log.info(`Checking fallback condition: status=${lastStatus}, htmlBody=${!!htmlBody}`);
     if (lastStatus === 403 || !htmlBody) {
         log.info('Attempting Playwright fallback due to blocking or missing HTML data');
         let pw = null;
         try {
+            if (!proxyConfiguration) log.warning('Proxy configuration missing for Playwright fallback');
             pw = await createPlaywrightSession(proxyConfiguration);
             const payload = await pw.fetchNextData(searchUrl);
             const normalized = normalizeNextDataPayload(payload);
