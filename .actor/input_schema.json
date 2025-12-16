@@ -29,7 +29,6 @@
       "default": "US",
       "example": "California"
     },
-
     "employmentType": {
       "title": "Employment Type",
       "type": "string",
@@ -72,17 +71,17 @@
       "minimum": 1,
       "maximum": 100,
       "editor": "number",
-      "default": 5,
-      "prefill": 5
+      "default": 10,
+      "prefill": 10
     },
     "maxConcurrency": {
       "title": "Max Concurrency",
       "type": "integer",
       "description": "Maximum concurrent requests for better performance.",
       "minimum": 1,
-      "maximum": 10,
-      "default": 3,
-      "prefill": 3,
+      "maximum": 20,
+      "default": 10,
+      "prefill": 10,
       "editor": "number"
     },
     "proxyConfiguration": {

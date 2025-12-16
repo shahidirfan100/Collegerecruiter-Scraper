@@ -3,9 +3,9 @@
   "location": "US",
   "employmentType": "All",
   "results_wanted": 50,
-  "max_pages": 5,
+  "max_pages": 10,
   "collectDetails": false,
-  "maxConcurrency": 3,
+  "maxConcurrency": 10,
   "proxyConfiguration": {
     "useApifyProxy": true
   }
