@@ -131,7 +131,7 @@ const createProxyUrlPicker = (proxyConfiguration) => {
     return async (label = 'search') => {
         const labelText = typeof label === 'string' ? label : 'generic';
         const session = `${prefix}_${labelText}`.slice(0, 50);
-        return proxyConfiguration.newUrl({ sessionId: session });
+        return proxyConfiguration.newUrl(session);
     };
 };
 
