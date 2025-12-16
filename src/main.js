@@ -22,6 +22,15 @@ const EMPLOYMENT_TYPES = {
     'temporary': 'Temporary',
     'intern': 'Internship',
 };
+const EMPLOYMENT_ENUM = {
+    'full time': 'FULL_TIME',
+    'part time': 'PART_TIME',
+    'contractor': 'CONTRACTOR',
+    'contract to hire': 'CONTRACT_TO_HIRE',
+    'temporary': 'TEMPORARY',
+    'intern': 'INTERN',
+    'internship': 'INTERN',
+};
 
 const JOB_CATEGORIES = {
     'Computer and it': 'COMPUTER_AND_IT',
@@ -41,6 +50,14 @@ const cleanHtml = (html) => {
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const normalizeEmploymentType = (value) => {
+    if (!value || value === 'All') return null;
+    const key = value.trim().toLowerCase();
+    if (EMPLOYMENT_ENUM[key]) return EMPLOYMENT_ENUM[key];
+    if (/^[A-Z_]+$/.test(value.trim())) return value.trim();
+    return value.trim().replace(/\s+/g, '_').toUpperCase();
+};
 
 const createLimiter = (maxConcurrency) => {
     let active = 0;
@@ -93,7 +110,8 @@ const buildSearchParams = ({ keyword, location, category, company, employmentTyp
     if (location) params.set('location', location);
     if (category && category !== 'All') params.set('category', category);
     if (company && company !== 'All') params.set('company', company);
-    if (employmentType && employmentType !== 'All') params.set('employmentType', employmentType);
+    const employmentParam = normalizeEmploymentType(employmentType);
+    if (employmentParam) params.set('employmentType', employmentParam);
     if (page && page > 1) params.set('page', String(page));
     return params;
 };
@@ -113,7 +131,7 @@ const createProxyUrlPicker = (proxyConfiguration) => {
     return async (label = 'search') => {
         const labelText = typeof label === 'string' ? label : 'generic';
         const session = `${prefix}_${labelText}`.slice(0, 50);
-        return proxyConfiguration.newUrl({ session });
+        return proxyConfiguration.newUrl({ sessionId: session });
     };
 };
 
