@@ -1,6 +1,6 @@
 // College Recruiter Jobs Scraper - HTTP + JSON parse first, HTML fallback
 import { Actor, log } from 'apify';
-import { Dataset, gotScraping, PlaywrightCrawler } from 'crawlee';
+import { Dataset, gotScraping } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
 
 const SEARCH_PAGE_BASE = 'https://www.collegerecruiter.com/job-search';
@@ -13,7 +13,6 @@ const HEADER_GENERATOR_OPTIONS = {
     operatingSystems: ['windows', 'linux'],
 };
 const REQUEST_TIMEOUT_MS = 35000;
-const PLAYWRIGHT_TIMEOUT_SECS = 45;
 
 const EMPLOYMENT_TYPES = {
     'full time': 'Full time',
@@ -40,6 +39,8 @@ const cleanHtml = (html) => {
     $('script, style, noscript').remove();
     return $.root().text().replace(/\s+/g, ' ').trim();
 };
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const createLimiter = (maxConcurrency) => {
     let active = 0;
@@ -80,7 +81,7 @@ const requestWithRetries = async (label, handler, { maxRetries = 3, startDelayMs
             if (attempt >= maxRetries) break;
             const waitTime = Math.round(startDelayMs * (1.5 ** (attempt - 1)) + Math.random() * 250);
             log.warning(`${label} attempt ${attempt}/${maxRetries} failed: ${error.message}. Retrying in ${waitTime} ms.`);
-            await Actor.sleep(waitTime);
+            await sleep(waitTime);
         }
     }
     throw lastError;
@@ -109,7 +110,11 @@ const buildSearchUrl = (search, page) => {
 const createProxyUrlPicker = (proxyConfiguration) => {
     if (!proxyConfiguration) return async () => undefined;
     const prefix = `collegerecruiter_${Date.now()}`;
-    return async (label = 'search') => proxyConfiguration.newUrl({ sessionId: `${prefix}_${label}` });
+    return async (label = 'search') => {
+        const labelText = typeof label === 'string' ? label : 'generic';
+        const session = `${prefix}_${labelText}`.slice(0, 50);
+        return proxyConfiguration.newUrl({ session });
+    };
 };
 
 const createRequestHelper = (proxyConfiguration) => {
@@ -200,28 +205,6 @@ const parseJobsFromHtmlList = (html) => {
     return { jobs, totalResults, source: 'html-list' };
 };
 
-const fetchWithPlaywright = async (url, proxyConfiguration) => {
-    let result = { html: null, nextData: null };
-    const crawler = new PlaywrightCrawler({
-        proxyConfiguration,
-        maxRequestsPerCrawl: 1,
-        navigationTimeoutSecs: PLAYWRIGHT_TIMEOUT_SECS,
-        requestHandlerTimeoutSecs: PLAYWRIGHT_TIMEOUT_SECS + 15,
-        requestHandler: async ({ page }) => {
-            await page.waitForLoadState('networkidle', { timeout: PLAYWRIGHT_TIMEOUT_SECS * 1000 }).catch(() => {});
-            result.html = await page.content();
-            try {
-                result.nextData = await page.evaluate(() => window.__NEXT_DATA__ ?? null);
-            } catch {
-                result.nextData = null;
-            }
-        },
-    });
-
-    await crawler.run([url]);
-    return result;
-};
-
 const parseJobFromJson = (jobData, source = 'json-api') => {
     const dateSeconds = jobData?.date?.seconds;
     const publishedAt = dateSeconds ? new Date(Number(dateSeconds) * 1000).toISOString() : jobData?.datePosted ?? null;
@@ -261,14 +244,7 @@ const parseJobFromJson = (jobData, source = 'json-api') => {
     };
 };
 
-const fetchSearchPage = async ({
-    search,
-    page,
-    request,
-    proxyConfiguration,
-    searchState,
-    stats,
-}) => {
+const fetchSearchPage = async ({ search, page, request, searchState, stats }) => {
     const params = buildSearchParams(search, page);
     const searchUrl = `${SEARCH_PAGE_BASE}?${params.toString()}`;
 
@@ -331,26 +307,6 @@ const fetchSearchPage = async ({
         }
     } catch (error) {
         log.warning(`Search HTML request failed: ${error.message}`);
-    }
-
-    log.info('Switching to Playwright fallback for search page.');
-    stats.playwrightRuns = (stats.playwrightRuns || 0) + 1;
-    stats.requests += 1;
-    const playwrightResult = await fetchWithPlaywright(searchUrl, proxyConfiguration);
-    if (playwrightResult?.nextData) {
-        const normalized = normalizeNextDataPayload(playwrightResult.nextData);
-        if (normalized?.jobs?.length) {
-            if (playwrightResult.nextData.buildId) searchState.buildId = playwrightResult.nextData.buildId;
-            searchState.playwrightUsed = true;
-            return { ...normalized, source: 'playwright-json', url: searchUrl };
-        }
-    }
-    if (playwrightResult?.html) {
-        const htmlJobs = parseJobsFromHtmlList(playwrightResult.html);
-        if (htmlJobs.jobs.length) {
-            searchState.playwrightUsed = true;
-            return { ...htmlJobs, source: 'playwright-html', url: searchUrl };
-        }
     }
 
     throw new Error('Unable to extract jobs from search page.');
@@ -524,8 +480,8 @@ try {
 
     const startTime = Date.now();
     const MAX_RUNTIME_MS = 3.5 * 60 * 1000;
-    const stats = { pagesProcessed: 0, jobsSaved: 0, requests: 0, errors: 0, playwrightRuns: 0 };
-    const searchState = { buildId: null, playwrightUsed: false };
+    const stats = { pagesProcessed: 0, jobsSaved: 0, requests: 0, errors: 0 };
+    const searchState = { buildId: null };
 
     log.info('Starting College Recruiter scraper');
     log.info(`Search params: keyword="${searchKeyword}", location="${searchLocation}"`);
@@ -558,7 +514,6 @@ try {
                 search: searchConfig,
                 page,
                 request,
-                proxyConfiguration: proxyConf,
                 searchState,
                 stats,
             });
@@ -637,9 +592,6 @@ try {
     log.info(`Jobs saved: ${saved}/${resultsWanted}`);
     log.info(`Pages processed: ${stats.pagesProcessed}/${maxPages}`);
     log.info(`HTTP requests (incl. retries): ${stats.requests}`);
-    if (stats.playwrightRuns) {
-        log.info(`Playwright fallbacks: ${stats.playwrightRuns}`);
-    }
     log.info(`Errors: ${stats.errors}`);
     log.info(`Runtime: ${totalTime.toFixed(2)}s`);
     log.info(`Performance: ${saved > 0 ? (saved / totalTime).toFixed(2) : '0.00'} jobs/sec`);
@@ -656,7 +608,6 @@ try {
             pagesProcessed: stats.pagesProcessed,
             runtime: totalTime,
             success: true,
-            usedPlaywright: searchState.playwrightUsed,
         });
     }
 
