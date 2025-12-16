@@ -48,7 +48,7 @@
   <h3>✨ Advanced Capabilities</h3>
   <ul>
     <li><strong>Smart Data Extraction</strong> - Automatically extracts structured data from embedded JSON</li>
-    <li><strong>Multiple Search Filters</strong> - Search by keywords, location, category, company, and employment type</li>
+    <li><strong>Multiple Search Filters</strong> - Search by keywords, location, and employment type</li>
     <li><strong>High-Speed Collection</strong> - Optimized for fast data gathering with configurable concurrency</li>
     <li><strong>Flexible Configuration</strong> - Customize results volume and detail level</li>
     <li><strong>Proxy Support</strong> - Built-in Apify Proxy integration for reliable scraping</li>
@@ -76,7 +76,6 @@
 {
   "keyword": "software engineer intern",
   "location": "California",
-  "category": "Computer and it",
   "employmentType": "Internship",
   "results_wanted": 100
 }
@@ -140,20 +139,7 @@
       <td>"US"</td>
     </tr>
     <tr>
-      <td><code>category</code></td>
-      <td>String</td>
-      <td>Job category filter (e.g., "Computer and it", "Healthcare")</td>
-      <td>No</td>
-      <td>"All"</td>
-    </tr>
-    <tr>
-      <td><code>company</code></td>
-      <td>String</td>
-      <td>Filter by specific company name</td>
-      <td>No</td>
-      <td>"All"</td>
-    </tr>
-    <tr>
+      <td><code>employmentType</code></td>
       <td><code>employmentType</code></td>
       <td>String</td>
       <td>Employment type (e.g., "Full time", "Internship")</td>

@@ -1,6 +1,6 @@
 {
   "title": "College Recruiter Jobs Scraper",
-  "description": "Extract entry-level jobs and internships from College Recruiter. Search by keywords, location, category, company, and employment type.",
+  "description": "Extract entry-level jobs and internships from College Recruiter. Search by keywords, location, and employment type.",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
@@ -29,33 +29,7 @@
       "default": "US",
       "example": "California"
     },
-    "category": {
-      "title": "Job Category",
-      "type": "string",
-      "description": "Filter by job category (e.g., 'Computer and it', 'Healthcare', 'Management').",
-      "editor": "select",
-      "enum": [
-        "All",
-        "Computer and it",
-        "Management",
-        "Healthcare",
-        "Sales and retail",
-        "Science and engineering",
-        "Accounting and finance",
-        "Advertising and marketing"
-      ],
-      "default": "All",
-      "prefill": "All"
-    },
-    "company": {
-      "title": "Company Name",
-      "type": "string",
-      "description": "Filter by specific company name (leave as 'All' to search all companies).",
-      "editor": "textfield",
-      "default": "All",
-      "prefill": "All",
-      "example": "Microsoft"
-    },
+
     "employmentType": {
       "title": "Employment Type",
       "type": "string",

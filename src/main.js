@@ -43,15 +43,7 @@ const EMPLOYMENT_ENUM = {
     'internship': 'INTERN',
 };
 
-const JOB_CATEGORIES = {
-    'Computer and it': 'COMPUTER_AND_IT',
-    'Management': 'MANAGEMENT',
-    'Healthcare': 'HEALTHCARE',
-    'Sales and retail': 'SALES_AND_RETAIL',
-    'Science and engineering': 'SCIENCE_AND_ENGINEERING',
-    'Accounting and finance': 'ACCOUNTING_AND_FINANCE',
-    'Advertising and marketing': 'ADVERTISING_AND_MARKETING',
-};
+
 
 const cleanHtml = (html) => {
     if (!html) return null;
@@ -115,12 +107,10 @@ const requestWithRetries = async (label, handler, { maxRetries = 3, startDelayMs
     throw lastError;
 };
 
-const buildSearchParams = ({ keyword, location, category, company, employmentType }, page) => {
+const buildSearchParams = ({ keyword, location, employmentType }, page) => {
     const params = new URLSearchParams();
     if (keyword) params.set('keyword', keyword);
     if (location) params.set('location', location);
-    if (category && category !== 'All') params.set('category', category);
-    if (company && company !== 'All') params.set('company', company);
     const employmentParam = normalizeEmploymentType(employmentType);
     if (employmentParam) params.set('employmentType', employmentParam);
     if (page && page > 1) params.set('page', String(page));
@@ -258,9 +248,14 @@ const parseJobFromJson = (jobData, source = 'json-api') => {
     const dateSeconds = jobData?.date?.seconds;
     const publishedAt = dateSeconds ? new Date(Number(dateSeconds) * 1000).toISOString() : jobData?.datePosted ?? null;
 
-    const employmentTypes = Array.isArray(jobData?.employmentType)
-        ? jobData.employmentType.filter((t) => t && t !== 'UNSPECIFIED').join(', ')
-        : jobData?.employmentTypeText ?? null;
+    let employmentTypes = null;
+    if (Array.isArray(jobData?.employmentType)) {
+        employmentTypes = jobData.employmentType.filter((t) => t && t !== 'UNSPECIFIED').join(', ');
+    } else if (typeof jobData?.employmentType === 'string') {
+        employmentTypes = jobData.employmentType;
+    } else {
+        employmentTypes = jobData?.employmentTypeText ?? null;
+    }
 
     const baseSalary = jobData?.baseSalary;
     let salaryText = null;
@@ -293,7 +288,7 @@ const parseJobFromJson = (jobData, source = 'json-api') => {
     };
 };
 
-const fetchSearchPage = async ({ search, page, request, searchState, stats }) => {
+const fetchSearchPage = async ({ search, page, request, searchState, stats, proxyConfiguration }) => {
     const params = buildSearchParams(search, page);
     const searchUrl = `${SEARCH_PAGE_BASE}?${params.toString()}`;
 
@@ -327,6 +322,7 @@ const fetchSearchPage = async ({ search, page, request, searchState, stats }) =>
     }
 
     let htmlBody = null;
+    let lastStatus = null;
     try {
         const res = await requestWithRetries(
             'Search HTML request',
@@ -338,6 +334,7 @@ const fetchSearchPage = async ({ search, page, request, searchState, stats }) =>
                 }),
             { maxRetries: 2, stats },
         );
+        lastStatus = res.statusCode;
         if (res.statusCode === 200) {
             htmlBody = res.body;
             const parsedNextData = parseNextDataFromHtml(htmlBody);
@@ -356,6 +353,24 @@ const fetchSearchPage = async ({ search, page, request, searchState, stats }) =>
         }
     } catch (error) {
         log.warning(`Search HTML request failed: ${error.message}`);
+    }
+
+    // Playwright fallback for heavy blocking (e.g., 403)
+    if (lastStatus === 403 || !htmlBody) {
+        log.info('Attempting Playwright fallback due to blocking or missing HTML data');
+        let pw = null;
+        try {
+            pw = await createPlaywrightSession(proxyConfiguration);
+            const payload = await pw.fetchNextData(searchUrl);
+            const normalized = normalizeNextDataPayload(payload);
+            if (normalized?.jobs?.length) {
+                return { ...normalized, source: 'playwright-json', url: searchUrl };
+            }
+        } catch (err) {
+            log.warning(`Playwright fallback failed: ${err.message}`);
+        } finally {
+            if (pw && pw.close) await pw.close();
+        }
     }
 
     throw new Error('Unable to extract jobs from search page.');
@@ -395,6 +410,9 @@ const parseJobsFromHtmlList = (html) => {
         // Extract location
         const location = $el.find('.location, .job-location, [class*="location"]').first().text().trim();
 
+        // Extract employment type
+        const employmentType = $el.find('.employment-type, .job-type, [class*="type"]').first().text().trim() || null;
+
         // Extract URL - look for the main link
         let url = $el.find('a[href*="/job/"]').first().attr('href');
         if (!url) url = $el.find('a').first().attr('href');
@@ -411,6 +429,7 @@ const parseJobsFromHtmlList = (html) => {
             title,
             company: company || null,
             location: location || null,
+            employmentType,
             url: fullUrl,
             date: { seconds: Date.now() / 1000 },
         });
@@ -532,7 +551,7 @@ const fetchJobDetail = async ({ jobUrl, request, stats }) => {
         jobDetail = mergeJobDetails(jobDetail, extractJobPostingFromJsonLd(html));
         return jobDetail;
     } catch (error) {
-        log.warning(`Job detail fetch failed for ${jobUrl}: ${error.message}`);
+        // log.warning(`Job detail fetch failed for ${jobUrl}: ${error.message}`);
         return null;
     }
 };
@@ -546,8 +565,6 @@ try {
         startUrl,
         keyword = '',
         location = 'US',
-        category = 'All',
-        company = 'All',
         employmentType = 'All',
         collectDetails = false,
         results_wanted: resultsWantedRaw = 50,
@@ -564,8 +581,6 @@ try {
     // Extract parameters from startUrl if provided
     let searchKeyword = keyword.trim();
     let searchLocation = location.trim();
-    let searchCategory = category;
-    let searchCompany = company;
     let searchEmploymentType = employmentType;
 
     if (startUrl) {
@@ -573,8 +588,6 @@ try {
             const u = new URL(startUrl);
             searchKeyword = u.searchParams.get('keyword') || searchKeyword;
             searchLocation = u.searchParams.get('location') || searchLocation;
-            searchCategory = u.searchParams.get('category') || searchCategory;
-            searchCompany = u.searchParams.get('company') || searchCompany;
             searchEmploymentType = u.searchParams.get('employmentType') || searchEmploymentType;
         } catch {
             log.warning('Failed to parse startUrl, using other input parameters');
@@ -607,8 +620,6 @@ try {
         const searchConfig = {
             keyword: searchKeyword,
             location: searchLocation,
-            category: searchCategory,
-            company: searchCompany,
             employmentType: searchEmploymentType,
         };
 
@@ -623,6 +634,7 @@ try {
                 request,
                 searchState,
                 stats,
+                proxyConfiguration: proxyConf,
             });
             log.info(`Page ${page}: Found ${pageData.jobs.length} jobs (strategy: ${pageData.source})`);
         } catch (err) {
@@ -652,12 +664,15 @@ try {
                 try {
                     let job = parseJobFromJson(jobData, pageData.source);
 
+                    // Detail fetching disabled per user request to avoid 403 blocks and improve speed
+                    /*
                     if (collectDetails && job.url) {
                         const detailData = await fetchJobDetail({ jobUrl: job.url, request, stats });
                         if (detailData) {
                             job = { ...job, ...detailData };
                         }
                     }
+                    */
 
                     await Dataset.pushData(job);
                     saved += 1;
@@ -669,7 +684,7 @@ try {
                     }
                 } catch (err) {
                     stats.errors += 1;
-                    log.warning(`Failed to process job ${jobId}: ${err.message}`);
+                    // log.warning(`Failed to process job ${jobId}: ${err.message}`);
                 }
             }),
         );
