@@ -4,6 +4,15 @@ import { Dataset, gotScraping } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
 import { chromium } from 'playwright';
 
+const USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+];
+const getRandomUserAgent = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+const randomDelay = () => sleep(500 + Math.random() * 1500);
+
+
 const SEARCH_PAGE_BASE = 'https://www.collegerecruiter.com/job-search';
 const NEXT_DATA_ENDPOINT = 'https://www.collegerecruiter.com/_next/data';
 const HEADER_GENERATOR_OPTIONS = {
@@ -12,6 +21,7 @@ const HEADER_GENERATOR_OPTIONS = {
     ],
     devices: ['desktop'],
     operatingSystems: ['windows', 'linux'],
+    httpVersion: '2',
 };
 const REQUEST_TIMEOUT_MS = 35000;
 
@@ -144,12 +154,22 @@ const createRequestHelper = (proxyConfiguration) => {
     return {
         call: async ({ url, session = 'search', responseType = 'text', ...overrides }) => {
             const proxyUrl = await pickProxyUrl(session);
+            // Add random delay for stealth
+            await randomDelay();
+
             return gotScraping({
                 url,
                 responseType,
                 proxyUrl,
                 useHeaderGenerator: true,
                 headerGeneratorOptions: HEADER_GENERATOR_OPTIONS,
+                headers: {
+                    'User-Agent': getRandomUserAgent(),
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Referer': 'https://www.collegerecruiter.com/',
+                    'Cache-Control': 'no-cache',
+                },
                 timeout: { request: REQUEST_TIMEOUT_MS },
                 throwHttpErrors: false,
                 http2: true,
@@ -228,8 +248,8 @@ const createPlaywrightSession = async (proxyConfiguration) => {
     return {
         fetchNextData,
         close: async () => {
-            await context.close().catch(() => {});
-            await browser.close().catch(() => {});
+            await context.close().catch(() => { });
+            await browser.close().catch(() => { });
         },
     };
 };
@@ -341,6 +361,64 @@ const fetchSearchPage = async ({ search, page, request, searchState, stats }) =>
     throw new Error('Unable to extract jobs from search page.');
 };
 
+const parseNextDataFromHtml = (html) => {
+    if (!html) return null;
+    const $ = cheerioLoad(html);
+    const nextDataScript = $('#__NEXT_DATA__').html();
+    if (!nextDataScript) return null;
+
+    try {
+        const data = JSON.parse(nextDataScript);
+        return normalizeNextDataPayload(data);
+    } catch (error) {
+        log.warning(`Failed to parse __NEXT_DATA__: ${error.message}`);
+        return null;
+    }
+};
+
+const parseJobsFromHtmlList = (html) => {
+    if (!html) return { jobs: [], totalResults: 0, source: 'html-parse' };
+    const $ = cheerioLoad(html);
+
+    const jobs = [];
+    // Try multiple selectors to find job cards
+    $('article, .job-card, .job-listing, [data-job-id]').each((_, el) => {
+        const $el = $(el);
+
+        // Extract title from various possible selectors
+        const title = $el.find('h2, h3, .job-title, [class*="title"]').first().text().trim();
+        if (!title) return; // Skip if no title
+
+        // Extract company
+        const company = $el.find('.company, .company-name, [class*="company"]').first().text().trim();
+
+        // Extract location
+        const location = $el.find('.location, .job-location, [class*="location"]').first().text().trim();
+
+        // Extract URL - look for the main link
+        let url = $el.find('a[href*="/job/"]').first().attr('href');
+        if (!url) url = $el.find('a').first().attr('href');
+        if (!url) return; // Skip if no URL
+
+        // Extract job ID from URL or data attribute
+        const id = $el.attr('data-job-id') || url?.match(/\/job\/(\d+)/)?.[1] || null;
+
+        // Build full URL if relative
+        const fullUrl = url.startsWith('http') ? url : `https://www.collegerecruiter.com${url}`;
+
+        jobs.push({
+            id: id || fullUrl,
+            title,
+            company: company || null,
+            location: location || null,
+            url: fullUrl,
+            date: { seconds: Date.now() / 1000 },
+        });
+    });
+
+    return { jobs, totalResults: jobs.length, source: 'html-parse' };
+};;
+
 const parseHtmlJobDetail = (html, url) => {
     if (!html) return null;
     const $ = cheerioLoad(html);
@@ -407,12 +485,12 @@ const extractJobPostingFromJsonLd = (html) => {
         location:
             jobData.jobLocation?.address?.addressLocality
                 ? [
-                      jobData.jobLocation.address.addressLocality,
-                      jobData.jobLocation.address.addressRegion,
-                      jobData.jobLocation.address.addressCountry,
-                  ]
-                      .filter(Boolean)
-                      .join(', ')
+                    jobData.jobLocation.address.addressLocality,
+                    jobData.jobLocation.address.addressRegion,
+                    jobData.jobLocation.address.addressCountry,
+                ]
+                    .filter(Boolean)
+                    .join(', ')
                 : jobData.jobLocation?.address?.addressLocality ?? null,
         datePosted: jobData.datePosted ?? jobData.datePublished ?? null,
         validThrough: jobData.validThrough ?? null,
@@ -474,7 +552,7 @@ try {
         collectDetails = false,
         results_wanted: resultsWantedRaw = 50,
         max_pages: maxPagesRaw = 5,
-        maxConcurrency = 3,
+        maxConcurrency = 5,
         proxyConfiguration,
     } = input;
 
