@@ -1,0 +1,53 @@
+{
+  "actorSpecification": 1,
+  "fields": {},
+  "views": {
+    "overview": {
+      "title": "Overview",
+      "transformation": {
+        "fields": [
+          "title",
+          "company",
+          "location",
+          "employmentType",
+          "salary",
+          "datePosted",
+          "url"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "title": {
+            "label": "Job Title",
+            "format": "text"
+          },
+          "company": {
+            "label": "Company",
+            "format": "text"
+          },
+          "location": {
+            "label": "Location",
+            "format": "text"
+          },
+          "employmentType": {
+            "label": "Employment Type",
+            "format": "text"
+          },
+          "salary": {
+            "label": "Salary",
+            "format": "text"
+          },
+          "datePosted": {
+            "label": "Date Posted",
+            "format": "text"
+          },
+          "url": {
+            "label": "Job URL",
+            "format": "link"
+          }
+        }
+      }
+    }
+  }
+}
