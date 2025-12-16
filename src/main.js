@@ -130,8 +130,11 @@ const createProxyUrlPicker = (proxyConfiguration) => {
     const prefix = `collegerecruiter_${Date.now()}`;
     return async (label = 'search') => {
         const labelText = typeof label === 'string' ? label : 'generic';
-        const session = `${prefix}_${labelText}`.slice(0, 50);
-        return proxyConfiguration.newUrl(session);
+        const rawSession = `${prefix}_${labelText}`;
+        const sessionId = rawSession
+            .replace(/[^\w._~]/g, '_')
+            .slice(0, 50);
+        return proxyConfiguration.newUrl(sessionId);
     };
 };
 
