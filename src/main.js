@@ -1,21 +1,26 @@
 // College Recruiter Jobs Scraper - HTTP + JSON parse first, HTML fallback
 import { Actor, log } from 'apify';
-import { Dataset } from 'crawlee';
+import { PlaywrightCrawler, Dataset } from 'crawlee';
 import { gotScraping } from 'got-scraping';
 import { load as cheerioLoad } from 'cheerio';
-import { chromium } from 'playwright';
+import { firefox } from 'playwright';
 
 const USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 15.7; rv:147.0) Gecko/20100101 Firefox/147.0',
+    'Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0',
 ];
 const getRandomUserAgent = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 const randomDelay = () => sleep(500 + Math.random() * 1500);
 
 
 const SEARCH_PAGE_BASE = 'https://www.collegerecruiter.com/job-search';
+const INTERNAL_API_BASE = 'https://app.collegerecruiter.com';
+const INTERNAL_SEARCH_ENDPOINT = `${INTERNAL_API_BASE}/job/search`;
+const INTERNAL_JOB_ENDPOINT = `${INTERNAL_API_BASE}/job`;
 const NEXT_DATA_ENDPOINT = 'https://www.collegerecruiter.com/_next/data';
+const JOB_SITEMAP_INDEX_URL = 'https://www.collegerecruiter.com/sitemap/sitemap.xml';
+const MIN_URLS_PER_SITEMAP_SCAN = 500;
 const HEADER_GENERATOR_OPTIONS = {
     browsers: [
         { name: 'chrome', minVersion: 110, maxVersion: 131 },
@@ -54,6 +59,17 @@ const cleanHtml = (html) => {
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const parseJsonSafely = (value) => {
+    if (!value) return null;
+    if (typeof value === 'object') return value;
+    if (typeof value !== 'string') return null;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return null;
+    }
+};
 
 const normalizeEmploymentType = (value) => {
     if (!value || value === 'All') return null;
@@ -127,6 +143,11 @@ const buildSearchUrl = (search, page) => {
     return u.href;
 };
 
+const buildInternalApiSearchUrl = (search, page) => {
+    const params = buildSearchParams(search, page);
+    return `${INTERNAL_SEARCH_ENDPOINT}?${params.toString()}`;
+};
+
 const createProxyUrlPicker = (proxyConfiguration) => {
     if (!proxyConfiguration) return async () => undefined;
     const prefix = `collegerecruiter_${Date.now()}`;
@@ -145,6 +166,7 @@ const createRequestHelper = (proxyConfiguration) => {
     return {
         call: async ({ url, session = 'search', responseType = 'text', ...overrides }) => {
             const proxyUrl = await pickProxyUrl(session);
+            const { headers: overrideHeaders = {}, ...restOverrides } = overrides;
             // Add random delay for stealth
             await randomDelay();
 
@@ -160,12 +182,13 @@ const createRequestHelper = (proxyConfiguration) => {
                     'Accept-Language': 'en-US,en;q=0.9',
                     'Referer': 'https://www.collegerecruiter.com/',
                     'Cache-Control': 'no-cache',
+                    ...overrideHeaders,
                 },
                 timeout: { request: REQUEST_TIMEOUT_MS },
                 throwHttpErrors: false,
                 http2: true,
                 decompress: true,
-                ...overrides,
+                ...restOverrides,
             });
         },
     };
@@ -181,6 +204,268 @@ const normalizeNextDataPayload = (payload) => {
         facets: pageProps.facets ?? [],
         query: pageProps.query ?? payload.query ?? null,
         buildId: payload.buildId ?? null,
+        requiresVerification: Boolean(pageProps.requiresVerification),
+        expiresAt: pageProps.expiresAt ?? null,
+    };
+};
+
+const normalizeInternalSearchPayload = (payload) => {
+    if (!payload || typeof payload !== 'object') return null;
+    const body = payload.data && typeof payload.data === 'object' ? payload.data : payload;
+
+    const rawJobs =
+        body.jobs
+        ?? body.results
+        ?? body.items
+        ?? payload.jobs
+        ?? payload.results
+        ?? payload.items
+        ?? [];
+
+    const jobs = Array.isArray(rawJobs)
+        ? rawJobs
+            .map((item) => {
+                if (item && typeof item === 'object' && item.data && typeof item.data === 'object') {
+                    return {
+                        ...item.data,
+                        status: item.status ?? item.data.status ?? null,
+                    };
+                }
+                return item;
+            })
+            .filter((item) => item && item.deletedAt == null)
+        : [];
+
+    const totalResults =
+        body.totalResults
+        ?? body.total
+        ?? body.count
+        ?? payload.totalResults
+        ?? payload.total
+        ?? payload.count
+        ?? jobs.length;
+
+    return {
+        jobs,
+        totalResults: Number(totalResults) || 0,
+        facets: body.facets ?? payload.facets ?? [],
+        query: body.query ?? payload.query ?? null,
+        requiresVerification: Boolean(body.requiresVerification ?? payload.requiresVerification),
+        expiresAt: body.expiresAt ?? payload.expiresAt ?? null,
+    };
+};
+
+const parseSitemapIndexUrls = (xml) => {
+    if (!xml) return [];
+    const matches = [...xml.matchAll(/<loc>(https:\/\/www\.collegerecruiter\.com\/sitemap\/sitemap_jobs_\d+\.xml)<\/loc>/g)];
+    const urls = matches.map((match) => match[1]);
+    return urls.sort((a, b) => {
+        const aNum = Number(a.match(/sitemap_jobs_(\d+)\.xml$/)?.[1] ?? 0);
+        const bNum = Number(b.match(/sitemap_jobs_(\d+)\.xml$/)?.[1] ?? 0);
+        return bNum - aNum;
+    });
+};
+
+const parseJobUrlsFromSitemap = (xml) => {
+    if (!xml) return [];
+    const matches = [...xml.matchAll(/<loc>(https:\/\/www\.collegerecruiter\.com\/job\/[^<]+)<\/loc>/g)];
+    return matches.map((match) => match[1]);
+};
+
+const extractJobIdFromUrl = (jobUrl) => jobUrl?.match(/\/job\/(\d+)/)?.[1] ?? null;
+
+const extractLocationFromApiJob = (jobData) => {
+    const primaryLocation = jobData?.jobLocation ?? jobData?.applicantLocationRequirements;
+    if (primaryLocation && typeof primaryLocation === 'object') {
+        const parts = [
+            primaryLocation.addressLocality,
+            primaryLocation.addressRegion,
+            primaryLocation.addressCountry,
+        ].filter(Boolean);
+        if (parts.length) return parts.join(', ');
+    }
+    return jobData?.location ?? null;
+};
+
+const buildSalaryText = (salaryData) => {
+    if (!salaryData) return null;
+    if (!(salaryData.minValue || salaryData.maxValue || salaryData.value)) return null;
+    const currency = salaryData.currency || '$';
+    let salaryText = null;
+    if (salaryData.minValue && salaryData.maxValue) {
+        salaryText = `${currency}${salaryData.minValue} - ${currency}${salaryData.maxValue}`;
+    } else if (salaryData.value) {
+        salaryText = `${currency}${salaryData.value}`;
+    } else if (salaryData.minValue) {
+        salaryText = `${currency}${salaryData.minValue}`;
+    } else if (salaryData.maxValue) {
+        salaryText = `${currency}${salaryData.maxValue}`;
+    }
+    if (salaryText && salaryData.unitText) salaryText = `${salaryText} ${salaryData.unitText}`;
+    return salaryText;
+};
+
+const mapApiJobToOutput = (jobData, jobUrl) => {
+    const employmentTypes = Array.isArray(jobData?.employmentType)
+        ? jobData.employmentType.filter((type) => type && type !== 'UNSPECIFIED').join(', ')
+        : (jobData?.employmentType ?? null);
+
+    const location = extractLocationFromApiJob(jobData);
+    const company = jobData?.hiringOrganization?.name ?? jobData?.company ?? null;
+    const description = cleanHtml(jobData?.description ?? null);
+    const salary = buildSalaryText(jobData?.baseSalary) ?? buildSalaryText(jobData?.estimatedSalary);
+    const url = jobUrl || (jobData?.id ? `https://www.collegerecruiter.com/job/${jobData.id}` : null);
+
+    return {
+        id: jobData?.id ?? null,
+        externalId: jobData?.exid ?? null,
+        status: jobData?.apiStatus ?? jobData?.status ?? null,
+        title: jobData?.title ?? null,
+        company,
+        location,
+        city: jobData?.jobLocation?.addressLocality ?? null,
+        region: jobData?.jobLocation?.addressRegion ?? null,
+        country: jobData?.jobLocation?.addressCountry ?? null,
+        postalCode: jobData?.jobLocation?.postalCode ?? null,
+        streetAddress: jobData?.jobLocation?.streetAddress ?? null,
+        isRemote: Boolean(jobData?.applicantLocationRequirements?.remote),
+        industry: Array.isArray(jobData?.industry) ? jobData.industry.join(', ') : (jobData?.industry ?? null),
+        salary,
+        employmentType: employmentTypes,
+        description: description || null,
+        descriptionHtml: jobData?.description ?? null,
+        url,
+        applyLink: url ? `${url}/apply?title=${encodeURIComponent(jobData?.title ?? '')}` : null,
+        datePosted: jobData?.datePosted ?? null,
+        validThrough: jobData?.validThrough ?? null,
+        rawDateText: jobData?.datePosted ?? null,
+        hiringOrganization: jobData?.hiringOrganization ?? null,
+        jobLocation: jobData?.jobLocation ?? null,
+        applicantLocationRequirements: jobData?.applicantLocationRequirements ?? null,
+        baseSalaryData: jobData?.baseSalary ?? null,
+        estimatedSalaryData: jobData?.estimatedSalary ?? null,
+        applicationInfo: jobData?.applicationInfo ?? null,
+        video: jobData?.video ?? null,
+        structuredData: jobData?.structuredData ?? null,
+        predictedIso2Lang: jobData?.predictedIso2Lang ?? null,
+        latentClickRedirectSearchDurationSeconds: jobData?.latentClickRedirectSearchDurationSeconds ?? null,
+        forceLatentSearchRedirect: jobData?.forceLatentSearchRedirect ?? null,
+        fetchedAt: new Date().toISOString(),
+    };
+};
+
+const matchesKeyword = (job, keyword) => {
+    const normalized = (keyword ?? '').trim().toLowerCase();
+    if (!normalized) return true;
+    const haystack = [
+        job?.title,
+        job?.company,
+        job?.description,
+        job?.location,
+    ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+    if (!haystack) return false;
+    if (haystack.includes(normalized)) return true;
+
+    const terms = normalized.split(/\s+/).filter((term) => term.length >= 3);
+    if (!terms.length) return false;
+    return terms.some((term) => haystack.includes(term));
+};
+
+const matchesLocation = (job, location) => {
+    const normalized = (location ?? '').trim().toLowerCase();
+    if (!normalized || normalized === 'all') return true;
+    const jobLocation = (job?.location ?? '').toLowerCase();
+    if (!jobLocation) return false;
+
+    // When users pass an ISO code such as "US", match by country code suffix.
+    if (/^[a-z]{2}$/i.test(normalized)) {
+        const pattern = new RegExp(`(^|[\\s,])${normalized.toUpperCase()}($|[\\s,])`, 'i');
+        return pattern.test(job?.location ?? '');
+    }
+    return jobLocation.includes(normalized);
+};
+
+const matchesEmploymentType = (job, employmentType) => {
+    const normalized = normalizeEmploymentType(employmentType);
+    if (!normalized) return true;
+    const value = (job?.employmentType ?? '').toUpperCase();
+    return value.includes(normalized);
+};
+
+const matchesSearchFilters = (job, search) => (
+    matchesKeyword(job, search.keyword)
+    && matchesLocation(job, search.location)
+    && matchesEmploymentType(job, search.employmentType)
+);
+
+const fetchJobSitemapUrls = async ({ request, stats }) => {
+    const response = await requestWithRetries(
+        'Job sitemap index request',
+        () =>
+            request({
+                url: JOB_SITEMAP_INDEX_URL,
+                responseType: 'text',
+                session: 'sitemap-index',
+                headers: {
+                    Accept: 'application/xml,text/xml;q=0.9,*/*;q=0.8',
+                },
+            }),
+        { maxRetries: 3, stats },
+    );
+    if (response.statusCode !== 200 || !response.body) {
+        throw new Error(`Sitemap index request failed with status ${response.statusCode}`);
+    }
+    return parseSitemapIndexUrls(response.body);
+};
+
+const fetchUrlsFromSitemap = async ({ sitemapUrl, request, stats }) => {
+    const response = await requestWithRetries(
+        'Job sitemap request',
+        () =>
+            request({
+                url: sitemapUrl,
+                responseType: 'text',
+                session: 'sitemap-jobs',
+                headers: {
+                    Accept: 'application/xml,text/xml;q=0.9,*/*;q=0.8',
+                },
+            }),
+        { maxRetries: 3, stats },
+    );
+    if (response.statusCode !== 200 || !response.body) {
+        throw new Error(`Job sitemap request failed with status ${response.statusCode}`);
+    }
+    return parseJobUrlsFromSitemap(response.body);
+};
+
+const fetchJobFromInternalApi = async ({ jobId, request, stats }) => {
+    const response = await requestWithRetries(
+        'Internal job API request',
+        () =>
+            request({
+                url: `${INTERNAL_JOB_ENDPOINT}/${jobId}`,
+                responseType: 'text',
+                session: 'detail-api',
+                headers: {
+                    Accept: 'application/json, text/plain, */*',
+                    Referer: 'https://www.collegerecruiter.com/',
+                    Origin: 'https://www.collegerecruiter.com',
+                },
+            }),
+        { maxRetries: 2, stats },
+    );
+
+    if (response.statusCode !== 200) return null;
+    const parsed = parseJsonSafely(response.body);
+    const jobs = Array.isArray(parsed?.jobs) ? parsed.jobs : [];
+    const first = jobs.find((item) => item?.data && item?.data?.deletedAt == null);
+    if (!first?.data) return null;
+    return {
+        ...first.data,
+        apiStatus: first.status ?? null,
     };
 };
 
@@ -198,26 +483,61 @@ const createPlaywrightSession = async (proxyConfiguration) => {
     const proxyUrl = await pickProxyUrl('playwright');
     const proxy = toPlaywrightProxy(proxyUrl);
 
-    const browser = await chromium.launch({
+    const browser = await firefox.launch({
         headless: true,
         proxy,
-        args: ['--disable-blink-features=AutomationControlled', '--no-sandbox'],
     });
 
     const context = await browser.newContext({
         locale: 'en-US',
         viewport: { width: 1366, height: 768 },
-        userAgent:
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        userAgent: getRandomUserAgent(),
     });
 
+    // Enhanced resource blocking and stealth
     await context.route('**/*', async (route) => {
         const resourceType = route.request().resourceType();
-        if (resourceType === 'image' || resourceType === 'media' || resourceType === 'font') {
+        const url = route.request().url();
+
+        // Block images, fonts, media, and common trackers
+        if (['image', 'font', 'media'].includes(resourceType) ||
+            url.includes('google-analytics') ||
+            url.includes('googletagmanager') ||
+            url.includes('facebook') ||
+            url.includes('doubleclick') ||
+            url.includes('pinterest') ||
+            url.includes('adsense')) {
             await route.abort();
             return;
         }
         await route.continue();
+    });
+
+    // Stealth scripts
+    await context.addInitScript(() => {
+        // Hide webdriver property
+        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+
+        // Mock plugins
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => [1, 2, 3, 4, 5],
+        });
+
+        // Mock languages
+        Object.defineProperty(navigator, 'languages', {
+            get: () => ['en-US', 'en'],
+        });
+
+        // Hide automation indicators
+        window.chrome = { runtime: {} };
+
+        // Override permissions query
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications' ?
+                Promise.resolve({ state: Notification.permission }) :
+                originalQuery(parameters)
+        );
     });
 
     const page = await context.newPage();
@@ -255,6 +575,124 @@ const createPlaywrightSession = async (proxyConfiguration) => {
             await browser.close().catch(() => { });
         },
     };
+};
+
+const fetchSearchPageWithCrawler = async (search, page, request, searchState, stats, proxyConfiguration) => {
+    const searchUrl = buildSearchUrl(search, page);
+
+    return new Promise((resolve, reject) => {
+        let result = null;
+        let error = null;
+
+        const crawler = new PlaywrightCrawler({
+            launchContext: {
+                launcher: firefox,
+                launchOptions: {
+                    headless: true,
+                },
+                userAgent: getRandomUserAgent(),
+            },
+            proxyConfiguration,
+            maxRequestRetries: 3,
+            useSessionPool: true,
+            sessionPoolOptions: {
+                maxPoolSize: 5,
+                sessionOptions: { maxUsageCount: 3 },
+            },
+            maxConcurrency: 1,
+            requestHandlerTimeoutSecs: 120,
+            navigationTimeoutSecs: 60,
+            
+            // Fingerprint generation for stealth
+            browserPoolOptions: {
+                useFingerprints: true,
+                fingerprintOptions: {
+                    fingerprintGeneratorOptions: {
+                        browsers: ['firefox'],
+                        operatingSystems: ['windows', 'macos'],
+                        devices: ['desktop'],
+                    },
+                },
+            },
+            
+            // Pre-navigation hooks for resource blocking and stealth
+            preNavigationHooks: [
+                async ({ page }) => {
+                    // Block heavy resources (keep stylesheets if needed for rendering)
+                    await page.route('**/*', (route) => {
+                        const type = route.request().resourceType();
+                        const url = route.request().url();
+
+                        // Block images, fonts, media, and common trackers
+                        if (['image', 'font', 'media'].includes(type) ||
+                            url.includes('google-analytics') ||
+                            url.includes('googletagmanager') ||
+                            url.includes('facebook') ||
+                            url.includes('doubleclick') ||
+                            url.includes('pinterest') ||
+                            url.includes('adsense')) {
+                            return route.abort();
+                        }
+                        return route.continue();
+                    });
+
+                    // Stealth: Hide webdriver property
+                    await page.addInitScript(() => {
+                        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                    });
+                },
+            ],
+            
+            async requestHandler({ page, request: crawlerRequest }) {
+                log.info(`Processing: ${crawlerRequest.url}`);
+
+                // Wait for page to fully load
+                await page.waitForLoadState('domcontentloaded');
+                await page.waitForLoadState('networkidle').catch(() => {});
+
+                // Wait a bit for dynamic content
+                await page.waitForTimeout(2000);
+
+                // Extract __NEXT_DATA__
+                const html = await page.content();
+                const match = html.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+
+                if (!match || !match[1]) {
+                    throw new Error('Missing __NEXT_DATA__ in page content');
+                }
+
+                let payload;
+                try {
+                    payload = JSON.parse(match[1]);
+                } catch (err) {
+                    throw new Error(`Failed to parse __NEXT_DATA__: ${err.message}`);
+                }
+
+                const normalized = normalizeNextDataPayload(payload);
+                if (normalized?.requiresVerification) {
+                    throw new Error('Playwright session still requires Turnstile verification.');
+                }
+                if (normalized?.jobs?.length) {
+                    result = { ...normalized, source: 'playwright-crawler', url: searchUrl };
+                } else {
+                    throw new Error('No jobs found in page data');
+                }
+            },
+
+            failedRequestHandler({ request }, err) {
+                error = err;
+                log.error(`Crawler request ${request.url} failed: ${err.message}`);
+            },
+        });
+
+        crawler.run([{ url: searchUrl }]).then(() => {
+            if (result) {
+                resolve(result);
+            } else {
+                reject(error || new Error('No data extracted'));
+            }
+        }).catch(reject);
+    });
 };
 
 const parseJobFromJson = (jobData, source = 'json-api') => {
@@ -304,6 +742,49 @@ const parseJobFromJson = (jobData, source = 'json-api') => {
 const fetchSearchPage = async ({ search, page, request, searchState, stats, proxyConfiguration }) => {
     const params = buildSearchParams(search, page);
     const searchUrl = `${SEARCH_PAGE_BASE}?${params.toString()}`;
+    let requiresVerification = false;
+
+    const internalSearchUrl = buildInternalApiSearchUrl(search, page);
+    try {
+        const res = await requestWithRetries(
+            'Internal search API request',
+            () =>
+                request({
+                    url: internalSearchUrl,
+                    responseType: 'text',
+                    session: 'search-internal-api',
+                    headers: {
+                        Accept: 'application/json, text/plain, */*',
+                        Referer: searchUrl,
+                        Origin: 'https://www.collegerecruiter.com',
+                    },
+                }),
+            { maxRetries: 2, stats },
+        );
+
+        const payload = parseJsonSafely(res.body);
+        if (res.statusCode === 200 && payload) {
+            const normalized = normalizeInternalSearchPayload(payload);
+            if (normalized?.requiresVerification) {
+                requiresVerification = true;
+                log.warning('Internal search API requires verification for this session.');
+            }
+            if (normalized?.jobs?.length) {
+                return { ...normalized, source: 'internal-search-api', url: searchUrl };
+            }
+        } else if (res.statusCode === 403) {
+            if (payload?.requiresVerification) {
+                requiresVerification = true;
+                log.warning('Internal search API blocked by verification gate.');
+            } else {
+                log.warning('Internal search API returned 403 without explicit verification flag.');
+            }
+        } else if (res.statusCode && res.statusCode >= 400) {
+            log.warning(`Internal search API responded with status ${res.statusCode}`);
+        }
+    } catch (error) {
+        log.warning(`Internal search API lookup failed: ${error.message}`);
+    }
 
     if (searchState.buildId) {
         try {
@@ -313,18 +794,31 @@ const fetchSearchPage = async ({ search, page, request, searchState, stats, prox
                 () =>
                     request({
                         url: nextDataUrl,
-                        responseType: 'json',
+                        responseType: 'text',
                         session: 'search-json',
+                        headers: {
+                            Accept: 'application/json, text/plain, */*',
+                            Referer: searchUrl,
+                            Origin: 'https://www.collegerecruiter.com',
+                        },
                     }),
                 { maxRetries: 2, stats },
             );
-            if (res.statusCode === 200 && res.body) {
-                const normalized = normalizeNextDataPayload(res.body);
+            const payload = parseJsonSafely(res.body);
+            if (res.statusCode === 200 && payload) {
+                const normalized = normalizeNextDataPayload(payload);
+                if (normalized?.requiresVerification) {
+                    requiresVerification = true;
+                    log.warning('Next.js JSON endpoint requires verification for this session.');
+                }
                 if (normalized?.jobs?.length) {
                     return { ...normalized, source: 'json-api', url: searchUrl };
                 }
             } else if (res.statusCode === 404) {
                 searchState.buildId = null;
+            } else if (res.statusCode === 403 && payload?.requiresVerification) {
+                requiresVerification = true;
+                log.warning('Next.js JSON endpoint blocked by verification gate.');
             } else if (res.statusCode && res.statusCode >= 400) {
                 log.warning(`JSON API responded with status ${res.statusCode}`);
             }
@@ -354,6 +848,10 @@ const fetchSearchPage = async ({ search, page, request, searchState, stats, prox
             if (parsedNextData?.buildId) {
                 searchState.buildId = parsedNextData.buildId;
             }
+            if (parsedNextData?.requiresVerification) {
+                requiresVerification = true;
+                log.warning('Search HTML reports requiresVerification=true in __NEXT_DATA__.');
+            }
             if (parsedNextData?.jobs?.length) {
                 return { ...parsedNextData, source: 'hydrated-html', url: searchUrl };
             }
@@ -370,21 +868,14 @@ const fetchSearchPage = async ({ search, page, request, searchState, stats, prox
 
     // Playwright fallback for heavy blocking (e.g., 403)
     log.info(`Checking fallback condition: status=${lastStatus}, htmlBody=${!!htmlBody}`);
-    if (lastStatus === 403 || !htmlBody) {
-        log.info('Attempting Playwright fallback due to blocking or missing HTML data');
-        let pw = null;
+    if (lastStatus === 403 || !htmlBody || requiresVerification) {
+        log.info('Attempting Playwright crawler fallback due to blocking or missing HTML data');
         try {
             if (!proxyConfiguration) log.warning('Proxy configuration missing for Playwright fallback');
-            pw = await createPlaywrightSession(proxyConfiguration);
-            const payload = await pw.fetchNextData(searchUrl);
-            const normalized = normalizeNextDataPayload(payload);
-            if (normalized?.jobs?.length) {
-                return { ...normalized, source: 'playwright-json', url: searchUrl };
-            }
+            const result = await fetchSearchPageWithCrawler(search, page, request, searchState, stats, proxyConfiguration);
+            return result;
         } catch (err) {
-            log.warning(`Playwright fallback failed: ${err.message}`);
-        } finally {
-            if (pw && pw.close) await pw.close();
+            log.warning(`Playwright crawler fallback failed: ${err.message}`);
         }
     }
 
@@ -581,8 +1072,7 @@ try {
         keyword = '',
         location = 'US',
         employmentType = 'All',
-        collectDetails = false,
-        results_wanted: resultsWantedRaw = 50,
+        results_wanted: resultsWantedRaw = 20,
         max_pages: maxPagesRaw = 10,
         maxConcurrency = 10,
         proxyConfiguration,
@@ -611,6 +1101,7 @@ try {
 
     const seenIds = new Set();
     const limiter = createLimiter(Math.max(1, Number(maxConcurrency) || 1));
+    const saveLimiter = createLimiter(1);
     let saved = 0;
 
     const startTime = Date.now();
@@ -620,9 +1111,31 @@ try {
 
     log.info('Starting College Recruiter scraper');
     log.info(`Search params: keyword="${searchKeyword}", location="${searchLocation}"`);
-    log.info(`Target: ${resultsWanted} jobs across ${maxPages} pages max`);
+    log.info(`Target: ${resultsWanted} jobs across ${maxPages} sitemaps max`);
 
-    for (let page = 1; page <= maxPages && saved < resultsWanted; page += 1) {
+    const searchConfig = {
+        keyword: searchKeyword,
+        location: searchLocation,
+        employmentType: searchEmploymentType,
+    };
+
+    let sitemapUrls = [];
+    try {
+        sitemapUrls = await fetchJobSitemapUrls({ request, stats });
+    } catch (err) {
+        stats.errors += 1;
+        throw new Error(`Unable to load job sitemap index: ${err.message}`);
+    }
+
+    if (sitemapUrls.length === 0) {
+        throw new Error('No job sitemaps found in sitemap index.');
+    }
+
+    const sitemapsToScan = sitemapUrls.slice(0, maxPages);
+    const maxUrlsPerSitemap = Math.max(MIN_URLS_PER_SITEMAP_SCAN, resultsWanted * 20);
+    log.info(`Discovered ${sitemapUrls.length} job sitemaps. Scanning latest ${sitemapsToScan.length}.`);
+
+    for (let page = 1; page <= sitemapsToScan.length && saved < resultsWanted; page += 1) {
         if (Date.now() - startTime > MAX_RUNTIME_MS) {
             const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
             log.info(`Timeout safety triggered at ${elapsed}s. Saved ${saved}/${resultsWanted} jobs.`);
@@ -631,45 +1144,36 @@ try {
         }
 
         stats.pagesProcessed = page;
+        const sitemapUrl = sitemapsToScan[page - 1];
+        log.info(`Scanning sitemap ${page}/${sitemapsToScan.length}: ${sitemapUrl}`);
 
-        const searchConfig = {
-            keyword: searchKeyword,
-            location: searchLocation,
-            employmentType: searchEmploymentType,
-        };
-
-        const pageUrl = buildSearchUrl(searchConfig, page);
-        log.info(`Fetching page ${page}: ${pageUrl}`);
-
-        let pageData;
+        let sitemapJobUrls = [];
         try {
-            pageData = await fetchSearchPage({
-                search: searchConfig,
-                page,
+            sitemapJobUrls = await fetchUrlsFromSitemap({
+                sitemapUrl,
                 request,
-                searchState,
                 stats,
-                proxyConfiguration: proxyConf,
             });
-            log.info(`Page ${page}: Found ${pageData.jobs.length} jobs (strategy: ${pageData.source})`);
         } catch (err) {
             stats.errors += 1;
-            log.error(`Failed to fetch page ${page}: ${err.message}`);
-            break;
+            log.warning(`Failed to fetch sitemap ${sitemapUrl}: ${err.message}`);
+            continue;
         }
 
-        if (!pageData.jobs || pageData.jobs.length === 0) {
-            log.info(`No more jobs returned on page ${page}. Stopping.`);
-            break;
+        if (!sitemapJobUrls.length) {
+            log.info(`No job URLs found in sitemap ${sitemapUrl}.`);
+            continue;
         }
 
-        const jobsToProcess = pageData.jobs.slice(0, resultsWanted - saved);
+        const candidateUrls = sitemapJobUrls.slice(0, maxUrlsPerSitemap);
+        log.info(`Sitemap ${page}: Found ${sitemapJobUrls.length} URLs. Processing up to ${candidateUrls.length}.`);
 
-        const detailPromises = jobsToProcess.map((jobData) =>
+        const detailPromises = candidateUrls.map((jobUrl) =>
             limiter(async () => {
                 if (saved >= resultsWanted) return;
 
-                const jobId = jobData.id;
+                const jobId = extractJobIdFromUrl(jobUrl);
+                if (!jobId) return;
                 if (jobId && seenIds.has(jobId)) {
                     log.debug(`Skipping duplicate job ${jobId}`);
                     return;
@@ -677,26 +1181,23 @@ try {
                 if (jobId) seenIds.add(jobId);
 
                 try {
-                    let job = parseJobFromJson(jobData, pageData.source);
+                    const apiJob = await fetchJobFromInternalApi({ jobId, request, stats });
+                    if (!apiJob) return;
 
-                    // Detail fetching disabled per user request to avoid 403 blocks and improve speed
-                    /*
-                    if (collectDetails && job.url) {
-                        const detailData = await fetchJobDetail({ jobUrl: job.url, request, stats });
-                        if (detailData) {
-                            job = { ...job, ...detailData };
+                    const job = mapApiJobToOutput(apiJob, jobUrl);
+                    if (!matchesSearchFilters(job, searchConfig)) return;
+
+                    await saveLimiter(async () => {
+                        if (saved >= resultsWanted) return;
+                        await Dataset.pushData(job);
+                        saved += 1;
+                        stats.jobsSaved = saved;
+
+                        if (saved % 10 === 0) {
+                            const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
+                            log.info(`Progress: ${saved}/${resultsWanted} jobs saved (${elapsedSeconds}s elapsed)`);
                         }
-                    }
-                    */
-
-                    await Dataset.pushData(job);
-                    saved += 1;
-                    stats.jobsSaved = saved;
-
-                    if (saved % 10 === 0) {
-                        const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
-                        log.info(`Progress: ${saved}/${resultsWanted} jobs saved (${elapsedSeconds}s elapsed)`);
-                    }
+                    });
                 } catch (err) {
                     stats.errors += 1;
                     // log.warning(`Failed to process job ${jobId}: ${err.message}`);
@@ -712,11 +1213,6 @@ try {
 
         if (saved >= resultsWanted) {
             log.info(`Target reached: ${saved} jobs collected.`);
-            break;
-        }
-
-        if (saved >= pageData.totalResults) {
-            log.info(`All available jobs collected: ${saved}/${pageData.totalResults}`);
             break;
         }
     }

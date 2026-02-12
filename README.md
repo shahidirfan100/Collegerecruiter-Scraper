@@ -1,192 +1,248 @@
 # College Recruiter Jobs Scraper
 
-Extract entry-level jobs, internships, and early-career opportunities from [College Recruiter](https://www.collegerecruiter.com) - one of the largest job boards for students and recent graduates in the United States.
+Extract and collect fresh job listings from College Recruiter in a structured dataset. Capture job titles, company names, locations, compensation details, application links, and rich listing metadata. Built for job market research, talent intelligence, and career data products.
 
-## What data can you extract?
+## Features
 
-This scraper collects comprehensive job listing data including:
+- **Fast large-scale collection** — Gather job listings in bulk with configurable limits.
+- **Filter-ready inputs** — Narrow results by keyword, location, and employment type.
+- **Rich job records** — Capture core fields plus location, compensation, posting dates, and nested metadata.
+- **Consistent dataset output** — Get clean JSON records ready for dashboards, automations, and ETL pipelines.
+- **Automation friendly** — Run on schedule and export in multiple formats for downstream workflows.
 
-- **Job title** and unique identifier
-- **Company name** and hiring organization
-- **Location** (city, state, country)
-- **Salary information** (when available)
-- **Employment type** (Full-time, Part-time, Internship, Contract)
-- **Job description** (summary or full text)
-- **Application URL** and job listing link
-- **Posted date** in ISO 8601 format
+## Use Cases
 
-## Why use College Recruiter Scraper?
+### Job Market Intelligence
+Track hiring activity by role, region, and employer to understand current demand trends. Use consistent job datasets for weekly or monthly reporting.
 
-College Recruiter is a specialized job board focused on entry-level positions and internships for students and recent graduates. This scraper enables you to:
+### Career Platform Data Feeds
+Power job boards, newsletters, and candidate tools with up-to-date listings. Keep your catalog fresh without manual copy-paste workflows.
 
-- **Build job aggregation platforms** with fresh entry-level opportunities
-- **Power career services portals** for universities and colleges
-- **Conduct job market research** and hiring trend analysis
-- **Create job alert systems** for specific keywords and locations
-- **Analyze salary data** for entry-level positions across industries
+### University Career Services
+Collect entry-level and early-career opportunities for students and graduates. Build targeted internal job resources by location and role type.
 
-## How to use College Recruiter Scraper
-
-### Example 1: Search for remote jobs
-
-```json
-{
-  "keyword": "remote",
-  "location": "US",
-  "results_wanted": 50
-}
-```
-
-### Example 2: Find software engineering internships
-
-```json
-{
-  "keyword": "software engineer intern",
-  "location": "California",
-  "employmentType": "Internship",
-  "results_wanted": 100
-}
-```
-
-### Example 3: Use a direct search URL
-
-```json
-{
-  "startUrl": "https://www.collegerecruiter.com/job-search?keyword=marketing&location=Texas",
-  "results_wanted": 50
-}
-```
-
-## Input parameters
-
-| Parameter | Type | Description | Default |
-|-----------|------|-------------|---------|
-| `startUrl` | String | Direct College Recruiter search URL (overrides other fields) | - |
-| `keyword` | String | Job title or keywords to search (e.g., "data analyst", "marketing intern") | `""` |
-| `location` | String | Location to filter jobs (e.g., "US", "California", "New York, NY") | `"US"` |
-| `employmentType` | String | Filter by type: "All", "Full time", "Part time", "Internship", "Contractor", "Temporary" | `"All"` |
-| `collectDetails` | Boolean | Visit each job page for full descriptions (slower but more complete) | `false` |
-| `results_wanted` | Integer | Maximum number of jobs to extract (1-1000) | `50` |
-| `max_pages` | Integer | Maximum result pages to process (approximately 10 jobs per page) | `10` |
-| `maxConcurrency` | Integer | Number of concurrent requests (1-20) | `10` |
-| `proxyConfiguration` | Object | Proxy settings for reliable scraping | `{"useApifyProxy": true}` |
-
-## Output data format
-
-Each extracted job is saved as a JSON object with the following structure:
-
-```json
-{
-  "id": "2122542617",
-  "title": "Remote/Hybrid Brand Marketing Manager",
-  "company": "Homefront Brands",
-  "location": "Huntersville, NC, US, 28078",
-  "salary": "$70,000 - $90,000",
-  "employmentType": "FULL_TIME",
-  "description": "A leading modular wall service provider seeks a Brand Marketing Manager...",
-  "url": "https://www.collegerecruiter.com/job/2122542617",
-  "applyLink": "https://www.collegerecruiter.com/job/2122542617/apply",
-  "datePosted": "2024-12-01T10:30:00.000Z",
-  "source": "json-api",
-  "fetchedAt": "2025-12-16T15:45:00.000Z"
-}
-```
-
-### Output fields explained
-
-| Field | Description |
-|-------|-------------|
-| `id` | Unique job identifier from College Recruiter |
-| `title` | Job position title |
-| `company` | Name of the hiring company or organization |
-| `location` | Job location (city, state, country, zip code) |
-| `salary` | Compensation range when available |
-| `employmentType` | Type of employment (FULL_TIME, PART_TIME, INTERN, etc.) |
-| `description` | Job summary or full description text |
-| `url` | Direct link to the job listing page |
-| `applyLink` | Direct application URL |
-| `datePosted` | When the job was posted (ISO 8601 format) |
-| `fetchedAt` | When the data was extracted (ISO 8601 format) |
-
-## Tips for best results
-
-1. **Use specific keywords** - Search for exact job titles like "data analyst intern" rather than generic terms like "jobs"
-
-2. **Enable proxy configuration** - Apify Proxy is recommended for reliable data collection
-
-3. **Start with small tests** - Use `results_wanted: 10` first to verify your search parameters work correctly
-
-4. **Balance speed and detail** - Keep `collectDetails: false` for faster runs; enable it only when you need full job descriptions
-
-5. **Filter effectively** - Use location and employment type filters to get exactly the jobs you need
-
-## Performance and cost
-
-This scraper is optimized for efficiency:
-
-| Jobs | Estimated Time | Compute Units |
-|------|----------------|---------------|
-| 50 jobs | ~30 seconds | ~0.01-0.02 |
-| 200 jobs | ~2 minutes | ~0.05-0.08 |
-| 500 jobs | ~5 minutes | ~0.10-0.15 |
-| 1000 jobs | ~10 minutes | ~0.20-0.30 |
-
-*Actual performance depends on proxy configuration and detail collection settings.*
-
-## Frequently asked questions
-
-**Q: Why am I getting no results?**
-
-- Check your keyword spelling
-- Try broader location terms (e.g., "US" instead of a specific city)
-- Ensure your employment type filter is not too restrictive
-
-**Q: Why is the scraper running slowly?**
-
-- Set `collectDetails: false` for faster extraction
-- Reduce `maxConcurrency` if you're experiencing timeouts
-- Enable Apify Proxy for better performance
-
-**Q: Some jobs are missing salary or description data. Is this normal?**
-
-- Yes, not all job listings include complete information
-- Enable `collectDetails: true` to get more complete data when available
-
-**Q: Can I scrape jobs from specific companies?**
-
-- Use the company name in your keyword search
-- Filter results after extraction to find specific employers
-
-## Use cases
-
-This scraper is ideal for:
-
-- **Job aggregators** building comprehensive entry-level job boards
-- **University career services** helping students find internships and first jobs
-- **Recruitment agencies** sourcing entry-level candidates
-- **HR analytics teams** studying hiring trends and salary benchmarks
-- **Career coaching platforms** providing job market insights to clients
-- **Market researchers** analyzing entry-level employment opportunities
-
-## Legal and compliance
-
-This scraper extracts publicly available job listing data for legitimate purposes including:
-
-- Job market research and analysis
-- Career guidance and student services
-- Recruitment analytics and insights
-- Job aggregation platforms
-
-**Important:** Users are responsible for ensuring their use complies with College Recruiter's Terms of Service, applicable laws, and data protection regulations.
-
-## Support
-
-If you encounter issues or have suggestions:
-
-- Open an issue on the Actor's Apify Store page
-- Check the Apify community forums for help
-- Review the run logs for error details
+### Recruiting and Sourcing Research
+Analyze hiring signals across companies and job categories. Identify where opportunities are opening and which employers are most active.
 
 ---
 
-**Last updated:** December 2025
+## Input Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `startUrl` | String | No | — | Optional search URL. If provided, query values can be used as filters. |
+| `keyword` | String | No | `""` | Keyword filter such as role title, skill, or phrase. |
+| `location` | String | No | `"US"` | Location filter such as country, state, or city. |
+| `employmentType` | String | No | `"All"` | Employment type filter: `All`, `Full time`, `Part time`, `Contractor`, `Contract to hire`, `Temporary`, `Internship`. |
+| `results_wanted` | Integer | No | `20` | Maximum number of jobs to return. |
+| `max_pages` | Integer | No | `10` | Search depth control for collection scope. |
+| `maxConcurrency` | Integer | No | `10` | Number of concurrent requests for throughput tuning. |
+| `proxyConfiguration` | Object | No | `{"useApifyProxy": true}` | Proxy settings for stability and reliability. |
+
+---
+
+## Output Data
+
+Each dataset item can contain:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | Number | Primary job identifier. |
+| `externalId` | String | External listing identifier when available. |
+| `status` | String | Listing status. |
+| `title` | String | Job title. |
+| `company` | String | Hiring company name. |
+| `location` | String | Human-readable location string. |
+| `city` | String | City from location metadata. |
+| `region` | String | State or region from location metadata. |
+| `country` | String | Country code or country name. |
+| `postalCode` | String | Postal code when available. |
+| `streetAddress` | String | Street address when available. |
+| `isRemote` | Boolean | Remote flag. |
+| `industry` | String | Industry/category label when available. |
+| `salary` | String | Salary summary string when available. |
+| `employmentType` | String | Employment type value. |
+| `description` | String | Clean text job description. |
+| `descriptionHtml` | String | HTML job description when available. |
+| `url` | String | Job details URL. |
+| `applyLink` | String | Direct application URL. |
+| `datePosted` | String | Posting datetime. |
+| `validThrough` | String | Listing expiration datetime. |
+| `rawDateText` | String | Raw posted-date value. |
+| `hiringOrganization` | Object | Hiring organization metadata. |
+| `jobLocation` | Object | Structured location object. |
+| `applicantLocationRequirements` | Object | Applicant location constraints. |
+| `baseSalaryData` | Object | Base salary metadata object. |
+| `estimatedSalaryData` | Object | Estimated salary metadata object. |
+| `applicationInfo` | Object | Application metadata and links. |
+| `video` | String | Video URL if present. |
+| `structuredData` | Object | Structured listing metadata object. |
+| `predictedIso2Lang` | String | Predicted language code. |
+| `latentClickRedirectSearchDurationSeconds` | Number | Redirect/search timing metadata. |
+| `forceLatentSearchRedirect` | Number | Redirect behavior metadata. |
+| `fetchedAt` | String | Timestamp when the record was collected. |
+
+---
+
+## Usage Examples
+
+### Quick Run (QA-friendly Defaults)
+
+```json
+{
+  "keyword": "",
+  "location": "US",
+  "employmentType": "All",
+  "results_wanted": 20,
+  "max_pages": 10,
+  "maxConcurrency": 10,
+  "proxyConfiguration": {
+    "useApifyProxy": true
+  }
+}
+```
+
+### Keyword + Location Targeting
+
+```json
+{
+  "keyword": "data analyst",
+  "location": "California",
+  "employmentType": "Full time",
+  "results_wanted": 100,
+  "max_pages": 20,
+  "maxConcurrency": 10,
+  "proxyConfiguration": {
+    "useApifyProxy": true
+  }
+}
+```
+
+### Start URL Driven Run
+
+```json
+{
+  "startUrl": "https://www.collegerecruiter.com/job-search?keyword=marketing&location=US&employmentType=FULL_TIME",
+  "results_wanted": 50,
+  "max_pages": 10,
+  "maxConcurrency": 10,
+  "proxyConfiguration": {
+    "useApifyProxy": true
+  }
+}
+```
+
+---
+
+## Sample Output
+
+```json
+{
+  "id": 2330131746,
+  "externalId": "131601718676",
+  "status": "ACTIVE",
+  "title": "Industrial HVAC Technician",
+  "company": "Lee Company",
+  "location": "Batesville, MS, US",
+  "city": "Batesville",
+  "region": "MS",
+  "country": "US",
+  "isRemote": false,
+  "salary": null,
+  "employmentType": "FULL_TIME",
+  "description": "Industrial HVAC Technician at Lee Company summary...",
+  "url": "https://www.collegerecruiter.com/job/2330131746-industrial-hvac-technician",
+  "applyLink": "https://www.collegerecruiter.com/job/2330131746-industrial-hvac-technician/apply?title=Industrial%20HVAC%20Technician",
+  "datePosted": "2026-02-09T02:40:32.000Z",
+  "validThrough": "2026-03-11T02:40:32.000Z",
+  "hiringOrganization": {
+    "name": "Lee Company"
+  },
+  "jobLocation": {
+    "addressLocality": "Batesville",
+    "addressRegion": "MS",
+    "addressCountry": "US"
+  },
+  "fetchedAt": "2026-02-12T06:31:17.820Z"
+}
+```
+
+---
+
+## Tips for Best Results
+
+### Start with a Small Limit
+- Use `results_wanted: 20` for quick validation.
+- Increase gradually for larger production pulls.
+
+### Keep Filters Practical
+- Use broad terms first (`US`, `All`) and narrow later.
+- Prefer clear role keywords over long phrases.
+
+### Tune Throughput Safely
+- Keep `maxConcurrency` moderate for stable runs.
+- Increase only after verifying consistent success rates.
+
+### Use Proxy Configuration
+- Keep proxy enabled for better reliability on repeated runs.
+- Use consistent proxy settings across scheduled runs.
+
+---
+
+## Integrations
+
+Connect your dataset to:
+
+- **Google Sheets** — Build reporting sheets for hiring trends.
+- **Airtable** — Maintain searchable job databases.
+- **Looker Studio / BI tools** — Visualize market and role insights.
+- **Webhooks** — Send fresh job records to custom endpoints.
+- **Make** — Automate enrichment, routing, and notifications.
+- **Zapier** — Trigger downstream actions from new runs.
+
+### Export Formats
+
+- **JSON** — Application and API workflows.
+- **CSV** — Spreadsheet and analytics workflows.
+- **Excel** — Business reporting.
+- **XML** — Legacy system integration.
+
+---
+
+## Frequently Asked Questions
+
+### How many jobs can I collect?
+Use `results_wanted` to set your target count. The actor returns up to your requested limit based on available matching listings.
+
+### Why are some fields empty?
+Some listings do not publish every attribute (for example salary or video). Empty values are expected when the source does not provide them.
+
+### Can I filter by employment type?
+Yes. Use `employmentType` with one of the supported values shown in Input Parameters.
+
+### Can I run this on a schedule?
+Yes. Schedule recurring runs in Apify and export results to your preferred destination.
+
+### What does `max_pages` control?
+It controls collection depth, helping you balance speed and coverage.
+
+### Is the output suitable for ETL pipelines?
+Yes. The dataset is structured, stable, and designed for downstream processing.
+
+---
+
+## Support
+
+For issues or feature requests, use the actor page in Apify Console.
+
+### Resources
+
+- [Apify Documentation](https://docs.apify.com/)
+- [Apify API Reference](https://docs.apify.com/api/v2)
+- [Apify Schedules](https://docs.apify.com/platform/schedules)
+
+---
+
+## Legal Notice
+
+This actor is intended for lawful data collection and analysis. You are responsible for complying with applicable laws, platform rules, and third-party terms of use. Use collected data responsibly.
