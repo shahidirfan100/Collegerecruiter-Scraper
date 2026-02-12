@@ -403,7 +403,7 @@ const matchesSearchFilters = (job, search) => (
 
 const fetchJobSitemapUrls = async ({ request, stats }) => {
     const response = await requestWithRetries(
-        'Job sitemap index request',
+        'Source index request',
         () =>
             request({
                 url: JOB_SITEMAP_INDEX_URL,
@@ -416,14 +416,14 @@ const fetchJobSitemapUrls = async ({ request, stats }) => {
         { maxRetries: 3, stats },
     );
     if (response.statusCode !== 200 || !response.body) {
-        throw new Error(`Sitemap index request failed with status ${response.statusCode}`);
+        throw new Error(`Source index request failed with status ${response.statusCode}`);
     }
     return parseSitemapIndexUrls(response.body);
 };
 
 const fetchUrlsFromSitemap = async ({ sitemapUrl, request, stats }) => {
     const response = await requestWithRetries(
-        'Job sitemap request',
+        'Source page request',
         () =>
             request({
                 url: sitemapUrl,
@@ -436,14 +436,14 @@ const fetchUrlsFromSitemap = async ({ sitemapUrl, request, stats }) => {
         { maxRetries: 3, stats },
     );
     if (response.statusCode !== 200 || !response.body) {
-        throw new Error(`Job sitemap request failed with status ${response.statusCode}`);
+        throw new Error(`Source page request failed with status ${response.statusCode}`);
     }
     return parseJobUrlsFromSitemap(response.body);
 };
 
 const fetchJobFromInternalApi = async ({ jobId, request, stats }) => {
     const response = await requestWithRetries(
-        'Internal job API request',
+        'Item detail request',
         () =>
             request({
                 url: `${INTERNAL_JOB_ENDPOINT}/${jobId}`,
@@ -1111,7 +1111,7 @@ try {
 
     log.info('Starting College Recruiter scraper');
     log.info(`Search params: keyword="${searchKeyword}", location="${searchLocation}"`);
-    log.info(`Target: ${resultsWanted} jobs across ${maxPages} sitemaps max`);
+    log.info(`Target: ${resultsWanted} jobs across ${maxPages} batches max`);
 
     const searchConfig = {
         keyword: searchKeyword,
@@ -1124,16 +1124,16 @@ try {
         sitemapUrls = await fetchJobSitemapUrls({ request, stats });
     } catch (err) {
         stats.errors += 1;
-        throw new Error(`Unable to load job sitemap index: ${err.message}`);
+        throw new Error(`Unable to load source index: ${err.message}`);
     }
 
     if (sitemapUrls.length === 0) {
-        throw new Error('No job sitemaps found in sitemap index.');
+        throw new Error('No source pages found in source index.');
     }
 
     const sitemapsToScan = sitemapUrls.slice(0, maxPages);
     const maxUrlsPerSitemap = Math.max(MIN_URLS_PER_SITEMAP_SCAN, resultsWanted * 20);
-    log.info(`Discovered ${sitemapUrls.length} job sitemaps. Scanning latest ${sitemapsToScan.length}.`);
+    log.info(`Discovered ${sitemapUrls.length} source pages. Scanning latest ${sitemapsToScan.length}.`);
 
     for (let page = 1; page <= sitemapsToScan.length && saved < resultsWanted; page += 1) {
         if (Date.now() - startTime > MAX_RUNTIME_MS) {
@@ -1145,7 +1145,7 @@ try {
 
         stats.pagesProcessed = page;
         const sitemapUrl = sitemapsToScan[page - 1];
-        log.info(`Scanning sitemap ${page}/${sitemapsToScan.length}: ${sitemapUrl}`);
+        log.info(`Scanning batch ${page}/${sitemapsToScan.length}`);
 
         let sitemapJobUrls = [];
         try {
@@ -1156,17 +1156,17 @@ try {
             });
         } catch (err) {
             stats.errors += 1;
-            log.warning(`Failed to fetch sitemap ${sitemapUrl}: ${err.message}`);
+            log.warning(`Failed to load batch ${page}: ${err.message}`);
             continue;
         }
 
         if (!sitemapJobUrls.length) {
-            log.info(`No job URLs found in sitemap ${sitemapUrl}.`);
+            log.info(`No records found in batch ${page}.`);
             continue;
         }
 
         const candidateUrls = sitemapJobUrls.slice(0, maxUrlsPerSitemap);
-        log.info(`Sitemap ${page}: Found ${sitemapJobUrls.length} URLs. Processing up to ${candidateUrls.length}.`);
+        log.info(`Batch ${page}: Found ${sitemapJobUrls.length} candidates. Processing up to ${candidateUrls.length}.`);
 
         const detailPromises = candidateUrls.map((jobUrl) =>
             limiter(async () => {
